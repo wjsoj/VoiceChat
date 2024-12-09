@@ -1,0 +1,6 @@
+chainlit
+openai
+pydantic==2.10.1
+openai-whisper
+coqui-tts
+pypinyin
