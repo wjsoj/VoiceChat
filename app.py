@@ -89,7 +89,7 @@ async def generate_text_answer(transcription, images = None):
             for image in images
         ]
 
-        model = "gpt-4-turbo"
+        model = "gpt-4o"
         messages = [
             {
                 "role": "user",
@@ -153,27 +153,7 @@ async def text_to_speech_offline(text: str):
         os.unlink(temp_file.name)  # 删除临时文件
         return "speech.mp3", audio_data
 
-@cl.on_chat_start
-async def start():
-    # 初始化TTS模型
-    global settings, tts_model
-    
-    settings = await cl.ChatSettings(
-        [
-            Switch(id="use_offline_tts", label="使用离线TTS", initial=True),
-            Switch(id="use_offline_stt", label="使用离线语音识别", initial=False),
-            Select(
-                id="speaker",
-                label="选择音色",
-                values=SPEAKERS,
-                initial_value="Ana Florence"
-            ),
-        ]
-    ).send()
-    
-    if tts_model is None and settings["use_offline_tts"]:
-        tts_model = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2").to(device)
-    
+async def start_tts_offline():
     res = await cl.AskActionMessage(
         content="Pick the TTS method:",
         actions=[
@@ -189,7 +169,8 @@ async def start():
             files = await cl.AskFileMessage(
                 content="Please upload a wav file to clone", accept={
                     "audio/wav": [".wav"]
-                }
+                },
+                max_size_mb=10
             ).send()
 
         clone_file = files[0]
@@ -206,6 +187,33 @@ async def start():
             content="Welcome to the Chainlit audio example."
         ).send()
 
+@cl.on_chat_start
+async def start():
+    # 初始化TTS模型
+    global settings, tts_model
+    
+    settings = await cl.ChatSettings(
+        [
+            Switch(id="use_offline_tts", label="使用离线TTS", initial=False),
+            Switch(id="use_offline_stt", label="使用离线语音识别", initial=False),
+            Select(
+                id="speaker",
+                label="选择音色",
+                values=SPEAKERS,
+                initial_value="Ana Florence"
+            ),
+        ]
+    ).send()
+    
+    if tts_model is None and settings["use_offline_tts"]:
+        tts_model = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2").to(device)
+    
+    if settings["use_offline_tts"]:
+        await start_tts_offline()
+    else:
+        await cl.Message(
+            content="Welcome to the Chainlit audio example."
+        ).send()
 
 @cl.on_audio_chunk
 async def on_audio_chunk(chunk: cl.AudioChunk):
@@ -224,11 +232,14 @@ async def on_audio_chunk(chunk: cl.AudioChunk):
 async def on_settings_update(settings):
     global tts_model
     if tts_model is None and settings["use_offline_tts"]:
+        await start_tts_offline()
         tts_model = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2").to(device)
 
 @cl.on_message
 async def on_message(message: cl.Message):
-    text_answer = await generate_text_answer(message.content)
+    images = [file for file in message.elements if "image" in file.mime]
+    
+    text_answer = await generate_text_answer(message.content, images)
     
     await cl.Message(
         content=text_answer
