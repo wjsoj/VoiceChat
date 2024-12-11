@@ -1,4 +1,6 @@
 voicechat
 .env
 .chainlit
+.files
+*.wav
 __pycache__

@@ -10,8 +10,22 @@ from tempfile import NamedTemporaryFile
 from openai import AsyncOpenAI
 
 from chainlit.element import ElementBased
-from chainlit.input_widget import Switch
+from chainlit.input_widget import Switch, Select
 import chainlit as cl
+
+# 添加说话人列表
+SPEAKERS = ['Claribel Dervla', 'Daisy Studious', 'Gracie Wise', 'Tammie Ema', 'Alison Dietlinde', 
+        'Ana Florence', 'Annmarie Nele', 'Asya Anara', 'Brenda Stern', 'Gitta Nikolina', 
+        'Henriette Usha', 'Sofia Hellen', 'Tammy Grit', 'Tanja Adelina', 'Vjollca Johnnie', 
+        'Andrew Chipper', 'Badr Odhiambo', 'Dionisio Schuyler', 'Royston Min', 'Viktor Eka', 
+        'Abrahan Mack', 'Adde Michal', 'Baldur Sanjin', 'Craig Gutsy', 'Damien Black', 
+        'Gilberto Mathias', 'Ilkin Urbano', 'Kazuhiko Atallah', 'Ludvig Milivoj', 'Suad Qasim', 
+        'Torcull Diarmuid', 'Viktor Menelaos', 'Zacharie Aimilios', 'Nova Hogarth', 'Maja Ruoho', 
+        'Uta Obando', 'Lidiya Szekeres', 'Chandra MacFarland', 'Szofi Granger', 'Camilla Holmström', 
+        'Lilya Stainthorpe', 'Zofija Kendrick', 'Narelle Moon', 'Barbora MacLean', 'Alexandra Hisakawa', 
+        'Alma María', 'Rosemary Okafor', 'Ige Behringer', 'Filip Traverse', 'Damjan Chapman', 
+        'Wulf Carlevaro', 'Aaron Dreschner', 'Kumar Dahl', 'Eugenio Mataracı', 'Ferran Simen', 
+        'Xavier Hayasaka', 'Luis Moray', 'Marcos Rudaski']
 
 cl.instrument_openai()
 
@@ -19,7 +33,8 @@ client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"),base_url=os.getenv("OPE
 
 settings = None
 tts_model = None
-current_language = "en"
+clone_file = None
+current_language = "zh"
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -34,12 +49,12 @@ async def speech_to_text(audio_file):
     response = await client.audio.transcriptions.create(
         model="whisper-1", file=audio_file
     )
-    print(response)
     return response.text
 
 
 @cl.step(type="tool")
 async def speech_to_text_offline(audio_file):
+    global current_language
     # 初始化whisper模型（首次运行会下载模型）
     model = whisper.load_model("tiny")
     
@@ -59,7 +74,7 @@ async def speech_to_text_offline(audio_file):
 
 
 @cl.step(type="tool")
-async def generate_text_answer(transcription, images):
+async def generate_text_answer(transcription, images = None):
     if images:
         # Only process the first 3 images
         images = images[:3]
@@ -113,16 +128,24 @@ async def text_to_speech(text: str, mime_type: str):
 
 @cl.step(type="tool")
 async def text_to_speech_offline(text: str):
-    global tts_model
+    global tts_model, current_language, clone_file
     
     with NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
         # 使用XTTS生成语音
-        tts_model.tts_to_file(
-            text=text,
-            file_path=temp_file.name,
-            language=current_language,
-            speaker_wav="./alloy.wav",
-        )
+        if clone_file:
+            tts_model.tts_to_file(
+                text=text,
+                file_path=temp_file.name,
+                language=current_language,
+                speaker_wav=clone_file.path
+            )
+        else:
+            tts_model.tts_to_file(
+                text=text,
+                file_path=temp_file.name,
+                language=current_language,
+                speaker=settings["speaker"],  # 使用选中的说话人
+            )
         
         with open(temp_file.name, "rb") as audio_file:
             audio_data = audio_file.read()
@@ -133,19 +156,55 @@ async def text_to_speech_offline(text: str):
 @cl.on_chat_start
 async def start():
     # 初始化TTS模型
-    global tts_model, settings
-    if tts_model is None:
-        tts_model = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2").to(device)
+    global settings, tts_model
     
     settings = await cl.ChatSettings(
         [
-            Switch(id="use_offline_tts", label="使用离线TTS", initial=False),
+            Switch(id="use_offline_tts", label="使用离线TTS", initial=True),
             Switch(id="use_offline_stt", label="使用离线语音识别", initial=False),
+            Select(
+                id="speaker",
+                label="选择音色",
+                values=SPEAKERS,
+                initial_value="Ana Florence"
+            ),
         ]
     ).send()
-    await cl.Message(
-        content="Welcome to the Chainlit audio example."
+    
+    if tts_model is None and settings["use_offline_tts"]:
+        tts_model = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2").to(device)
+    
+    res = await cl.AskActionMessage(
+        content="Pick the TTS method:",
+        actions=[
+            cl.Action(name="Clone voice", value="clone", label="Clone"),
+            cl.Action(name="Use default speakers", value="speaker", label="Speaker"),
+        ],
     ).send()
+    
+    if res and res.get("value") == "clone":
+        global clone_file
+        files = None
+        while files == None:
+            files = await cl.AskFileMessage(
+                content="Please upload a wav file to clone", accept={
+                    "audio/wav": [".wav"]
+                }
+            ).send()
+
+        clone_file = files[0]
+        
+        elements = [
+            cl.Audio(path=clone_file.path, display="inline"),
+        ]
+        await cl.Message(
+            content="Here is an audio file",
+            elements=elements,
+        ).send()
+    else:
+        await cl.Message(
+            content="Welcome to the Chainlit audio example."
+        ).send()
 
 
 @cl.on_audio_chunk
@@ -161,9 +220,37 @@ async def on_audio_chunk(chunk: cl.AudioChunk):
     # For now, write the chunks to a buffer and transcribe the whole audio at the end
     cl.user_session.get("audio_buffer").write(chunk.data)
 
-# @cl.on_settings_update
-# async def on_settings_update(settings):
-#     print(settings)
+@cl.on_settings_update
+async def on_settings_update(settings):
+    global tts_model
+    if tts_model is None and settings["use_offline_tts"]:
+        tts_model = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2").to(device)
+
+@cl.on_message
+async def on_message(message: cl.Message):
+    text_answer = await generate_text_answer(message.content)
+    
+    await cl.Message(
+        content=text_answer
+    ).send()
+    
+    use_offline_tts = settings["use_offline_tts"]
+    
+    if use_offline_tts:
+        output_name, output_audio = await text_to_speech_offline(text_answer)
+    else:
+        output_name, output_audio = await text_to_speech(text_answer, "audio/mpeg")
+    
+    output_audio_el = cl.Audio(
+        name=output_name,
+        auto_play=True,
+        mime="audio/mpeg",  # 固定使用 MP3 mime type
+        content=output_audio,
+    )
+    answer_message = await cl.Message(content="").send()
+
+    answer_message.elements = [output_audio_el]
+    await answer_message.update()
 
 @cl.on_audio_end
 async def on_audio_end(elements: list[ElementBased]):
